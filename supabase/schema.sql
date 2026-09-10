@@ -3,14 +3,22 @@ create extension if not exists "pgcrypto";
 create table if not exists couples (
   id uuid primary key default gen_random_uuid(),
   name text not null default 'Notre duo',
+  join_code text not null unique default upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8)),
   created_at timestamptz not null default now()
 );
 create table if not exists partners (
   id uuid primary key references auth.users(id) on delete cascade,
   couple_id uuid not null references couples(id) on delete cascade,
   name text not null,
-  email text not null
+  email text not null,
+  created_at timestamptz not null default now()
 );
+
+alter table couples add column if not exists join_code text;
+update couples set join_code = upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8)) where join_code is null;
+alter table couples alter column join_code set default upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8));
+create unique index if not exists couples_join_code_key on couples(join_code);
+alter table partners add column if not exists created_at timestamptz not null default now();
 create table if not exists actions (
   id uuid primary key default gen_random_uuid(), couple_id uuid not null references couples(id) on delete cascade,
   title text not null, description text not null default '', category text not null check (category in ('fun','romantique','defi','surprise')), created_at timestamptz not null default now()
@@ -38,12 +46,28 @@ security definer set search_path = public
 as $$
 declare new_couple_id uuid;
 begin
-  insert into public.couples (name) values ('Notre duo') returning id into new_couple_id;
+  insert into public.couples (name) values (coalesce(new.raw_user_meta_data ->> 'couple_name', 'Notre duo')) returning id into new_couple_id;
   insert into public.partners (id, couple_id, name, email)
   values (new.id, new_couple_id, coalesce(new.raw_user_meta_data ->> 'name', 'Partenaire A'), new.email);
   return new;
 end;
 $$;
+
+create or replace function public.join_couple_by_code(p_join_code text, p_name text)
+returns public.couples
+language plpgsql
+security definer set search_path = public
+as $$
+declare target_couple public.couples;
+begin
+  select * into target_couple from public.couples where join_code = upper(trim(p_join_code));
+  if target_couple.id is null then raise exception 'Code de couple invalide'; end if;
+  update public.partners set couple_id = target_couple.id, name = nullif(trim(p_name), '') where id = auth.uid();
+  return target_couple;
+end;
+$$;
+
+grant execute on function public.join_couple_by_code(text, text) to authenticated;
 
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
