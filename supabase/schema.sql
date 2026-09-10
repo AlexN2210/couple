@@ -90,6 +90,14 @@ alter table actions enable row level security;
 alter table schedules enable row level security;
 alter table triggers enable row level security;
 
+do $$
+begin
+  alter publication supabase_realtime add table public.triggers;
+exception
+  when duplicate_object then null;
+end;
+$$;
+
 drop policy if exists "everyone can read categories" on categories;
 create policy "everyone can read categories" on categories for select using (true);
 
@@ -129,9 +137,8 @@ language plpgsql
 security definer set search_path = public
 as $$
 begin
-  if new.created_by_partner_id is null then
-    new.created_by_partner_id = auth.uid();
-  end if;
+  new.created_by_partner_id = auth.uid();
+  new.is_template = false;
   return new;
 end;
 $$;
@@ -159,10 +166,10 @@ drop policy if exists "couple members can create triggers" on triggers;
 create policy "couple members can read their couple" on couples for select using (exists (select 1 from partners where partners.couple_id = couples.id and partners.id = auth.uid()));
 create policy "partners can read their profile" on partners for select using (id = auth.uid() or exists (select 1 from partners member where member.couple_id = partners.couple_id and member.id = auth.uid()));
 drop policy if exists "everyone can read template actions" on actions;
-create policy "everyone can read template actions" on actions for select using (is_template = true or exists (select 1 from partners where partners.couple_id = actions.couple_id and partners.id = auth.uid()));
+create policy "users can read their own actions" on actions for select using (created_by_partner_id = auth.uid());
 create policy "couple members can insert actions" on actions for insert with check (is_template = false and exists (select 1 from partners where partners.couple_id = actions.couple_id and partners.id = auth.uid()));
-create policy "couple members can update actions" on actions for update using (exists (select 1 from partners where partners.couple_id = actions.couple_id and partners.id = auth.uid())) with check (exists (select 1 from partners where partners.couple_id = actions.couple_id and partners.id = auth.uid()));
-create policy "couple members can delete actions" on actions for delete using (exists (select 1 from partners where partners.couple_id = actions.couple_id and partners.id = auth.uid()));
+create policy "users can update their own actions" on actions for update using (created_by_partner_id = auth.uid()) with check (created_by_partner_id = auth.uid() and is_template = false);
+create policy "users can delete their own actions" on actions for delete using (created_by_partner_id = auth.uid());
 create policy "couple members can manage schedules" on schedules for all using (exists (select 1 from partners where partners.couple_id = schedules.couple_id and partners.id = auth.uid())) with check (exists (select 1 from partners where partners.couple_id = schedules.couple_id and partners.id = auth.uid()));
 create policy "couple members can read triggers" on triggers for select using (exists (select 1 from actions join partners on partners.couple_id = actions.couple_id where actions.id = triggers.action_id and partners.id = auth.uid()));
 create policy "couple members can create triggers" on triggers for insert with check (exists (select 1 from actions join partners on partners.couple_id = actions.couple_id where actions.id = triggers.action_id and partners.id = auth.uid()));
