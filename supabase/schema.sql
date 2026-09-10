@@ -21,8 +21,11 @@ create unique index if not exists couples_join_code_key on couples(join_code);
 alter table partners add column if not exists created_at timestamptz not null default now();
 create table if not exists actions (
   id uuid primary key default gen_random_uuid(), couple_id uuid not null references couples(id) on delete cascade,
-  title text not null, description text not null default '', category text not null check (category in ('fun','romantique','defi','surprise')), created_at timestamptz not null default now()
+  title text not null, description text not null default '', category text not null check (category in ('fun','romantique','defi','surprise')), kind text not null default 'action' check (kind in ('action','scenario')), created_at timestamptz not null default now()
 );
+alter table actions add column if not exists kind text not null default 'action';
+alter table actions drop constraint if exists actions_kind_check;
+alter table actions add constraint actions_kind_check check (kind in ('action', 'scenario'));
 create table if not exists schedules (
   id uuid primary key default gen_random_uuid(), couple_id uuid not null references couples(id) on delete cascade,
   start_hour time not null, end_hour time not null, days_of_week int[] not null default '{}', active boolean not null default true,
@@ -73,6 +76,16 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.create_private_couple_for_user();
+
+drop policy if exists "couple members can read their couple" on couples;
+drop policy if exists "partners can read their profile" on partners;
+drop policy if exists "couple members can read actions" on actions;
+drop policy if exists "couple members can insert actions" on actions;
+drop policy if exists "couple members can update actions" on actions;
+drop policy if exists "couple members can delete actions" on actions;
+drop policy if exists "couple members can manage schedules" on schedules;
+drop policy if exists "couple members can read triggers" on triggers;
+drop policy if exists "couple members can create triggers" on triggers;
 
 create policy "couple members can read their couple" on couples for select using (exists (select 1 from partners where partners.couple_id = couples.id and partners.id = auth.uid()));
 create policy "partners can read their profile" on partners for select using (id = auth.uid() or exists (select 1 from partners member where member.couple_id = partners.couple_id and member.id = auth.uid()));
