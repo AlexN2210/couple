@@ -6,7 +6,7 @@ import './App.css'
 
 type Category = 'fun' | 'romantique' | 'defi' | 'surprise'
 type ContentKind = 'action' | 'scenario'
-type Action = { id: string; title: string; description: string; category: Category; kind: ContentKind; createdAt: string }
+type Action = { id: string; title: string; description: string; category: Category; kind: ContentKind; isTemplate?: boolean; createdAt: string }
 type Trigger = { id: string; actionId: string; actionTitle: string; time: string; partner: string }
 type Schedule = { id: string; label: string; start: string; end: string; days: string[]; active: boolean }
 type Partner = { id: string; name: string; email: string }
@@ -15,9 +15,9 @@ type SessionUser = { id: string; email?: string }
 type InstallPrompt = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }> }
 
 const demoActions: Action[] = [
-  { id: 'demo-1', title: 'Danse dans le salon', description: 'Lancez une chanson au hasard et dansez ensemble.', category: 'fun', kind: 'action', createdAt: '2026-09-08' },
-  { id: 'demo-2', title: 'Le mot doux inattendu', description: 'Écrivez trois choses que vous aimez chez l’autre.', category: 'romantique', kind: 'action', createdAt: '2026-09-07' },
-  { id: 'demo-3', title: 'Changer de chemin', description: 'Prenez une rue que vous ne connaissez pas.', category: 'surprise', kind: 'scenario', createdAt: '2026-09-06' },
+  { id: 'demo-1', title: 'Danse dans le salon', description: 'Lancez une chanson au hasard et dansez ensemble.', category: 'fun', kind: 'action', isTemplate: false, createdAt: '2026-09-08' },
+  { id: 'demo-2', title: 'Le mot doux inattendu', description: 'Écrivez trois choses que vous aimez chez l’autre.', category: 'romantique', kind: 'action', isTemplate: false, createdAt: '2026-09-07' },
+  { id: 'demo-3', title: 'Changer de chemin', description: 'Prenez une rue que vous ne connaissez pas.', category: 'surprise', kind: 'scenario', isTemplate: false, createdAt: '2026-09-06' },
 ]
 const demoSchedules: Schedule[] = [
   { id: 'demo-s1', label: 'Matin doux', start: '08:00', end: '10:30', days: ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven'], active: true },
@@ -110,13 +110,13 @@ function AppShell({ user, onSignOut }: { user: SessionUser; onSignOut: () => voi
     const [{ data: coupleData }, { data: partnerData }, { data: remoteActions }, { data: remoteTriggers }, { data: remoteSchedules }] = await Promise.all([
       client.from('couples').select('id,name,join_code').eq('id', membership.couple_id).single(),
       client.from('partners').select('id,name,email').eq('couple_id', membership.couple_id).order('created_at'),
-      client.from('actions').select('id,title,description,category,kind,created_at').eq('couple_id', membership.couple_id).order('created_at', { ascending: false }),
+      client.from('actions').select('id,title,description,category,kind,is_template,created_at').or(`couple_id.eq.${membership.couple_id},is_template.eq.true`).order('created_at', { ascending: false }),
       client.from('triggers').select('id,action_id,triggered_at,delivered_to_partner_id,actions(title)').order('triggered_at', { ascending: false }),
       client.from('schedules').select('id,start_hour,end_hour,days_of_week,active').eq('couple_id', membership.couple_id).order('start_hour'),
     ])
     if (coupleData) setCouple({ id: coupleData.id, name: coupleData.name, joinCode: coupleData.join_code })
     if (partnerData) setPartners(partnerData)
-    if (remoteActions) setActions(remoteActions.map((item) => ({ id: item.id, title: item.title, description: item.description, category: item.category as Category, kind: (item.kind || 'action') as ContentKind, createdAt: item.created_at })))
+    if (remoteActions) setActions(remoteActions.map((item) => ({ id: item.id, title: item.title, description: item.description, category: item.category as Category, kind: (item.kind || 'action') as ContentKind, isTemplate: item.is_template, createdAt: item.created_at })))
     if (remoteTriggers) setTriggers(remoteTriggers.map((item) => { const relation = Array.isArray(item.actions) ? item.actions[0] : item.actions; return { id: item.id, actionId: item.action_id, actionTitle: relation?.title || 'Action surprise', time: new Date(item.triggered_at).toLocaleString('fr-FR'), partner: partnerData?.find((person) => person.id === item.delivered_to_partner_id)?.name || 'Votre partenaire' } }))
     if (remoteSchedules) setSchedules(remoteSchedules.map((item) => ({ id: item.id, label: `Plage ${formatTime(item.start_hour)} - ${formatTime(item.end_hour)}`, start: formatTime(item.start_hour), end: formatTime(item.end_hour), days: daysToLabels(item.days_of_week), active: item.active })))
   }, [setActions, setSchedules, setTriggers, user.id])
@@ -143,6 +143,22 @@ function AppShell({ user, onSignOut }: { user: SessionUser; onSignOut: () => voi
   useEffect(() => {
     document.querySelectorAll('.nav-item[href="/horaires"] span').forEach((item) => { item.textContent = 'Scénarios' })
   }, [])
+  useEffect(() => {
+    const card = document.querySelector('.couple-card')
+    if (!card || card.querySelector('.join-code-button')) return
+    const button = document.createElement('button')
+    button.className = 'join-code-button'
+    button.type = 'button'
+    button.textContent = 'Voir le code de liaison'
+    button.addEventListener('click', async () => {
+      const code = couple?.joinCode || 'indisponible'
+      if (couple?.joinCode && navigator.clipboard) await navigator.clipboard.writeText(couple.joinCode)
+      setToast(`Code de liaison : ${code}`)
+      window.setTimeout(() => setToast(null), 4200)
+    })
+    card.append(button)
+    return () => button.remove()
+  }, [couple?.joinCode])
   useEffect(() => {
     let deferred: InstallPrompt | null = null
     const button = document.createElement('button')
@@ -178,7 +194,7 @@ function AppShell({ user, onSignOut }: { user: SessionUser; onSignOut: () => voi
 
   useEffect(() => { const timer = window.setInterval(() => { const hour = new Date().getHours(); if (schedules.some((item) => item.active && hour >= Number(item.start.slice(0, 2)) && hour < Number(item.end.slice(0, 2))) && Math.random() > .65) void triggerAction() }, 30000); return () => clearInterval(timer) }, [schedules, triggerAction])
 
-  const addAction = async (draft: Omit<Action, 'id' | 'createdAt'>) => { let saved: Action = { ...draft, id: crypto.randomUUID(), createdAt: new Date().toISOString() }; if (supabase && coupleId) { const { data } = await supabase.from('actions').insert({ couple_id: coupleId, ...draft }).select('id,created_at').single(); if (data) saved = { ...saved, id: data.id, createdAt: data.created_at } } setActions((current) => [saved, ...current]); setShowAdd(false); setToast(draft.kind === 'scenario' ? 'Nouveau scénario ajouté' : 'Nouvelle action ajoutée') }
+  const addAction = async (draft: Omit<Action, 'id' | 'createdAt' | 'isTemplate'>) => { let saved: Action = { ...draft, isTemplate: false, id: crypto.randomUUID(), createdAt: new Date().toISOString() }; if (supabase && coupleId) { const { data } = await supabase.from('actions').insert({ couple_id: coupleId, is_template: false, ...draft }).select('id,created_at').single(); if (data) saved = { ...saved, id: data.id, createdAt: data.created_at } } setActions((current) => [saved, ...current]); setShowAdd(false); setToast(draft.kind === 'scenario' ? 'Nouveau scénario ajouté' : 'Nouvelle action ajoutée') }
   const toggleSchedule = async (schedule: Schedule) => { setSchedules((current) => current.map((item) => item.id === schedule.id ? { ...item, active: !item.active } : item)); if (supabase) await supabase.from('schedules').update({ active: !schedule.active }).eq('id', schedule.id) }
   const coupleTitle = couple?.name || partners.map((partner) => partner.name).join(' & ') || 'Votre espace partagé'
 
@@ -188,7 +204,7 @@ function AppShell({ user, onSignOut }: { user: SessionUser; onSignOut: () => voi
 function NavItem({ to, icon, label, count }: { to: string; icon: React.ReactNode; label: string; count?: number }) { return <NavLink to={to} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>{icon}<span>{label}</span>{count ? <em>{count}</em> : null}</NavLink> }
 function Dashboard({ actions, triggers, schedules, couple, partners, onTrigger, onAdd }: { actions: Action[]; triggers: Trigger[]; schedules: Schedule[]; couple: Couple | null; partners: Partner[]; onTrigger: () => void; onAdd: () => void }) { const active = schedules.filter((item) => item.active).length; const names = partners.map((item) => item.name).join(' & ') || 'vous deux'; return <><section className="welcome-row"><div><p className="eyebrow">{new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).toUpperCase()}</p><h1>Bonjour, {names} <span>♡</span></h1><p className="subheading">{couple?.name || 'Votre espace partagé'} · {partners.length} partenaire{partners.length > 1 ? 's' : ''}</p></div><button className="primary-button" onClick={onAdd}><Plus size={18} /> Ajouter une action</button></section><section className="hero-panel"><div className="hero-copy"><div className="live-tag"><span /> SYSTÈME ACTIF</div><h2>La routine n’a<br /><i>qu’à bien se tenir.</i></h2><p>Vos actions se déclenchent aléatoirement selon vos moments à deux.</p><button className="light-button" onClick={onTrigger}><RefreshCw size={16} /> Déclencher maintenant</button></div><div className="hero-orbit"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="orbit-core"><Heart size={28} fill="currentColor" /></div><div className="orbit-dot dot-one" /><div className="orbit-dot dot-two" /></div></section><div className="section-heading"><div><p className="eyebrow">VUE D’ENSEMBLE</p><h2>Votre duo en chiffres</h2></div><NavLink to="/historique" className="text-link">Voir l’historique <ChevronRight size={15} /></NavLink></div><section className="stats-grid"><StatCard icon={<Sparkles size={19} />} value={actions.length} label="Actions imaginées" tone="violet" /><StatCard icon={<Zap size={19} />} value={triggers.length} label="Déclenchements" tone="amber" /><StatCard icon={<Clock3 size={19} />} value={active} label="Plages actives" tone="blue" /><StatCard icon={<Heart size={19} />} value={partners.length} label="Partenaires" tone="rose" /></section><section className="dashboard-grid"><div className="content-card"><div className="card-heading"><div><p className="eyebrow">BIBLIOTHÈQUE PARTAGÉE</p><h3>Dernières actions</h3></div><NavLink to="/actions" className="circle-arrow"><ChevronRight size={18} /></NavLink></div>{actions.slice(0, 3).map((action) => <ActionRow key={action.id} action={action} />)}</div><div className="content-card"><div className="card-heading"><div><p className="eyebrow">À VENIR</p><h3>Vos plages horaires</h3></div><NavLink to="/horaires" className="circle-arrow"><ChevronRight size={18} /></NavLink></div>{schedules.slice(0, 3).map((schedule) => <div className="schedule-mini" key={schedule.id}><div className="schedule-icon on"><Clock3 size={17} /></div><div><strong>{schedule.label}</strong><small>{schedule.start} — {schedule.end} · {schedule.days.slice(0, 3).join(', ')}</small></div><span className={schedule.active ? 'active-label' : 'paused-label'}>{schedule.active ? 'Active' : 'Pause'}</span></div>)}</div></section></> }
 function StatCard({ icon, value, label, tone }: { icon: React.ReactNode; value: string | number; label: string; tone: string }) { return <div className="stat-card"><div className={`stat-icon ${tone}`}>{icon}</div><strong>{value}</strong><span>{label}</span></div> }
-function ActionRow({ action, onDelete }: { action: Action; onDelete?: () => void }) { return <div className="action-row"><div className={`category-mark ${action.category}`} /><div className="action-info"><strong>{action.title}</strong><span>{action.description}</span></div><span className={`kind-label ${action.kind}`}>{action.kind === 'scenario' ? 'Scénario' : 'Action'}</span><span className={`category-label ${action.category}`}>{categoryLabels[action.category]}</span>{onDelete && <button className="delete-button" onClick={onDelete} aria-label="Supprimer"><Trash2 size={16} /></button>}</div> }
+function ActionRow({ action, onDelete }: { action: Action; onDelete?: () => void }) { return <div className="action-row"><div className={`category-mark ${action.category}`} /><div className="action-info"><strong>{action.title}</strong><span>{action.description}</span></div>{action.isTemplate && <span className="template-label">Prérempli</span>}<span className={`kind-label ${action.kind}`}>{action.kind === 'scenario' ? 'Scénario' : 'Action'}</span><span className={`category-label ${action.category}`}>{categoryLabels[action.category]}</span>{onDelete && !action.isTemplate && <button className="delete-button" onClick={onDelete} aria-label="Supprimer"><Trash2 size={16} /></button>}</div> }
 function ContentPage({ actions, kind, onAdd, onDelete }: { actions: Action[]; kind: ContentKind; onAdd: () => void; onDelete: (id: string) => void }) { const [filter, setFilter] = useState<'all' | Category>('all'); const visible = useMemo(() => actions.filter((item) => item.kind === kind && (filter === 'all' || item.category === filter)), [actions, filter, kind]); return <><section className="page-title-row"><div><p className="eyebrow">BIBLIOTHÈQUE PARTAGÉE</p><h1>{kind === 'scenario' ? 'Scénarios' : 'Actions'}</h1><p className="subheading">{kind === 'scenario' ? 'Les scénarios imaginés par votre duo.' : 'Les actions imaginées par votre duo.'}</p></div><button className="primary-button" onClick={onAdd}><Plus size={18} /> Ajouter {kind === 'scenario' ? 'un scénario' : 'une action'}</button></section><div className="filter-row"><div className="filters">{(['all', 'fun', 'romantique', 'defi', 'surprise'] as const).map((item) => <button key={item} className={filter === item ? 'selected' : ''} onClick={() => setFilter(item)}>{item === 'all' ? 'Toutes' : categoryLabels[item]}</button>)}</div><span className="muted-text">{visible.length} élément{visible.length > 1 ? 's' : ''}</span></div><div className="content-card full-card">{visible.length ? visible.map((action) => <ActionRow key={action.id} action={action} onDelete={() => onDelete(action.id)} />) : <div className="empty-state"><Sparkles size={25} /><strong>Aucun {kind === 'scenario' ? 'scénario' : 'action'} pour le moment</strong><span>Ajoutez votre première idée partagée.</span></div>}</div></> }
 function ActionsPage(props: { actions: Action[]; onAdd: () => void; onDelete: (id: string) => void }) { return <ContentPage {...props} kind="action" /> }
 function SchedulesPage({ schedules }: { schedules: Schedule[]; onToggle: (schedule: Schedule) => void }) { void schedules; const scenarios = Object.keys(localStorage).filter((key) => key.startsWith('btr-actions-')).flatMap((key) => { try { return (JSON.parse(localStorage.getItem(key) || '[]') as Action[]).filter((item) => item.kind === 'scenario') } catch { return [] } }); return <><section className="page-title-row"><div><p className="eyebrow">BIBLIOTHÈQUE PARTAGÉE</p><h1>Scénarios</h1><p className="subheading">Les scénarios imaginés par votre duo.</p></div></section><div className="content-card full-card">{scenarios.length ? scenarios.map((scenario) => <ActionRow key={scenario.id} action={scenario} />) : <div className="empty-state"><Sparkles size={25} /><strong>Aucun scénario pour le moment</strong><span>Ajoutez votre première idée partagée depuis l’accueil.</span></div>}</div></> }
