@@ -21,11 +21,13 @@ create unique index if not exists couples_join_code_key on couples(join_code);
 alter table partners add column if not exists created_at timestamptz not null default now();
 create table if not exists actions (
   id uuid primary key default gen_random_uuid(), couple_id uuid not null references couples(id) on delete cascade,
-  title text not null, description text not null default '', category text not null check (category in ('fun','romantique','defi','surprise')), kind text not null default 'action' check (kind in ('action','scenario')), created_at timestamptz not null default now()
+  title text not null, description text not null default '', category text not null check (category in ('fun','romantique','defi','surprise')), kind text not null default 'action' check (kind in ('action','scenario')), created_by_partner_id uuid references partners(id) on delete set null, created_at timestamptz not null default now()
 );
 alter table actions add column if not exists kind text not null default 'action';
+alter table actions add column if not exists created_by_partner_id uuid references partners(id) on delete set null;
 alter table actions drop constraint if exists actions_kind_check;
 alter table actions add constraint actions_kind_check check (kind in ('action', 'scenario'));
+create index if not exists actions_created_by_partner_id_idx on actions(created_by_partner_id);
 create table if not exists schedules (
   id uuid primary key default gen_random_uuid(), couple_id uuid not null references couples(id) on delete cascade,
   start_hour time not null, end_hour time not null, days_of_week int[] not null default '{}', active boolean not null default true,
@@ -72,10 +74,28 @@ $$;
 
 grant execute on function public.join_couple_by_code(text, text) to authenticated;
 
+create or replace function public.set_action_author()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  if new.created_by_partner_id is null then
+    new.created_by_partner_id = auth.uid();
+  end if;
+  return new;
+end;
+$$;
+
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.create_private_couple_for_user();
+
+drop trigger if exists set_action_author_on_insert on public.actions;
+create trigger set_action_author_on_insert
+  before insert on public.actions
+  for each row execute procedure public.set_action_author();
 
 drop policy if exists "couple members can read their couple" on couples;
 drop policy if exists "partners can read their profile" on partners;
@@ -96,3 +116,18 @@ create policy "couple members can delete actions" on actions for delete using (e
 create policy "couple members can manage schedules" on schedules for all using (exists (select 1 from partners where partners.couple_id = schedules.couple_id and partners.id = auth.uid())) with check (exists (select 1 from partners where partners.couple_id = schedules.couple_id and partners.id = auth.uid()));
 create policy "couple members can read triggers" on triggers for select using (exists (select 1 from actions join partners on partners.couple_id = actions.couple_id where actions.id = triggers.action_id and partners.id = auth.uid()));
 create policy "couple members can create triggers" on triggers for insert with check (exists (select 1 from actions join partners on partners.couple_id = actions.couple_id where actions.id = triggers.action_id and partners.id = auth.uid()));
+
+create or replace view public.action_author_audit
+with (security_invoker = true)
+as
+select
+  actions.id,
+  actions.couple_id,
+  actions.title,
+  actions.kind,
+  actions.category,
+  actions.created_at,
+  partners.name as author_name,
+  partners.email as author_email
+from public.actions
+left join public.partners on partners.id = actions.created_by_partner_id;
